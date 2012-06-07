@@ -22,7 +22,7 @@ from freshen.test.base import FeatureSuite, FreshenTestCase, ExceptionWrapper
 
 try:
     # use colorama for cross-platform colored text, if available
-    import colorama # pylint: disable=F0401
+    import colorama  # pylint: disable=F0401 NOQUA
     colorama.init()
 except ImportError:
     colorama = None
@@ -91,7 +91,13 @@ class FreshenNosePlugin(Plugin):
                           help="Make a report of all undefined steps that "
                                "freshen encounters when running scenarios. "
                                "[NOSE_FRESHEN_LIST_UNDEFINED]")
-
+        parser.add_option('--show-step-definitions',
+                          action="store_true",
+                          default=env.get('NOSE_FRESHEN_SHOW_STEP_DEFINITIONS') == '1',
+                          dest="show_step_definitions",
+                          help="Show the patterns of all loaded step deifnitions"
+                               "[NOSE_FRESHEN_SHOW_STEP_DEFINITIONS]")
+        
     def configure(self, options, config):
         super(FreshenNosePlugin, self).configure(options, config)
         all_tags = options.tags.split(",") if options.tags else []
@@ -105,6 +111,7 @@ class FreshenNosePlugin(Plugin):
             self.undefined_steps = []
         else:
             self.undefined_steps = None
+        self.show_step_definitions = options.show_step_definitions
         self._test_class = None
 
     def wantDirectory(self, dirname):
@@ -159,7 +166,9 @@ class FreshenNosePlugin(Plugin):
         except StepImplLoadException, e:
             yield StepsLoadFailure(address=TestAddress(filename), *e.exc)
             return
-
+        
+        if self.show_step_definitions:
+            self.all_steps = sum(step_registry.steps.values(), [])
         cnt = 0
         ctx = FeatureSuite()
         for i, sc in enumerate(feat.iter_scenarios()):
@@ -176,7 +185,7 @@ class FreshenNosePlugin(Plugin):
         log.debug("Loading from name %s" % name)
 
         if not self._is_file_with_indexes(name):
-            return # let nose take care of it
+            return  # let nose take care of it
 
         name_without_indexes, indexes = self._split_file_in_indexes(name)
         if not os.path.exists(name_without_indexes):
@@ -233,6 +242,13 @@ class FreshenNosePlugin(Plugin):
             result.addError = instancemethod(_addError, result, result.__class__)
 
     def report(self, stream):
+        if self.show_step_definitions:
+            stream.write("======================================================================\n")
+            stream.write("Step definitions\n")
+            stream.write("----------------------------------------------------------------------\n")
+            for step in self.all_steps:
+                stream.write(str(step) + '\n')
+            
         if self.undefined_steps:
             stream.write("======================================================================\n")
             stream.write("Tests with undefined steps\n")
@@ -265,4 +281,3 @@ class FreshenNosePlugin(Plugin):
             else:
                 ret.append(FreshenPrettyPrint.step_passed(step))
         return "\n".join(ret)
-

@@ -61,6 +61,12 @@ class StepImpl(object):
     def get_location(self):
         code = self.func.func_code
         return "%s:%d" % (code.co_filename, code.co_firstlineno)
+    
+    def __str__(self):
+        pattern = repr(self.spec)
+        if self.re_spec:
+            pattern = repr(self.re_spec.pattern) + " (compiled)"
+        return u"<%s:%s @%s%s>" % (self.__class__.__name__, self.func.__name__, self.step_type.capitalize(), pattern)
 
 class HookImpl(object):
 
@@ -209,8 +215,6 @@ class StepImplRegistry(object):
 
     def add_named_transform(self, named_transform):
         self.named_transforms.append(named_transform)
-    def _apply_transforms(self, arg, step):
-        return arg
         self._nt_capture_group_index[named_transform.capture_group_name] = named_transform
         self.named_transforms_did_change()
     
@@ -230,6 +234,7 @@ class StepImplRegistry(object):
         """
         result = None
         for si in self.steps[step.step_type]:
+            match = si.match(step.match, self)
             if match:
                 if result:
                     raise AmbiguousStepImpl(step, result[0], si)
