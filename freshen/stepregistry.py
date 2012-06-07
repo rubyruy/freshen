@@ -4,8 +4,7 @@ import logging
 import re
 import os
 import sys
-import traceback
-from itertools import chain
+
 
 __all__ = ['Given', 'When', 'Then', 'Before', 'After', 'AfterStep', 'Transform', 'NamedTransform']
 __unittest = 1
@@ -34,14 +33,9 @@ class StepImpl(object):
         self.step_type = step_type
         self.spec = spec
         self.func = func
-        self.named_transforms = []
-
-    def apply_named_transform(self, name, pattern, transform):
-        if name in self.spec:
-            self.spec = self.spec.replace(name, pattern)
-            self.named_transforms.append(transform)
-            if hasattr(self, 're_spec'):
-                del self.re_spec
+        self.nt_change_id = None
+        self.re_spec = None
+        self.name_lookup = {}
 
     def run(self, *args, **kwargs):
         return self.func(*args, **kwargs)
@@ -49,11 +43,21 @@ class StepImpl(object):
     def __call__(self, *args, **kwargs):
         return self.func(*args, **kwargs)
 
-    def match(self, match):
-        if not hasattr(self, 're_spec'):
-            self.re_spec = re.compile(self.spec)
-        return self.re_spec.match(match)
+    def match(self, match, registry=None):
+        spec = self.spec
+        if registry and self.nt_change_id != registry.nt_change_id:
+            # Perform named transform repalcements if we haven't yet
+            for nt in registry.named_transforms:
+                spec = spec.replace(nt.name, nt.named_in_pattern)
+            self.re_spec = None
+            self.nt_change_id = registry.nt_change_id
 
+        if self.re_spec is None:
+            self.re_spec = re.compile(spec)
+            # Also cache a reversed groupindex for later use
+            self.name_lookup = dict((v, k) for k, v in self.re_spec.groupindex.iteritems())
+        return self.re_spec.match(match)
+        
     def get_location(self):
         code = self.func.func_code
         return "%s:%d" % (code.co_filename, code.co_firstlineno)
@@ -103,9 +107,14 @@ class NamedTransformImpl(TransformImpl):
         self.name = name
         self.in_pattern = in_pattern
         self.out_pattern = out_pattern
-
-    def apply_to_step(self, step):
-        step.apply_named_transform(self.name, self.in_pattern, self)
+    
+    @property
+    def named_in_pattern(self):
+        return r'(?P<%s>%s)' % (self.capture_group_name, self.in_pattern)
+    
+    @property
+    def capture_group_name(self):
+        return "__nt%s__" % id(self)
 
 
 class StepImplLoadException(Exception):
@@ -185,12 +194,12 @@ class StepImplRegistry(object):
 
         self.transforms = []
         self.named_transforms = []
+        self._nt_capture_group_index = {}
+        self.nt_change_id = 0
         self.tag_matcher_class = tag_matcher_class
 
     def add_step(self, step_type, step):
         self.steps[step_type].append(step)
-        for named_transform in self.named_transforms:
-            named_transform.apply_to_step(step)
 
     def add_hook(self, hook_type, hook):
         self.hooks[hook_type].append(hook)
@@ -200,14 +209,14 @@ class StepImplRegistry(object):
 
     def add_named_transform(self, named_transform):
         self.named_transforms.append(named_transform)
-        for step in chain(*self.steps.values()):
-            named_transform.apply_to_step(step)
-
     def _apply_transforms(self, arg, step):
-        for transform in chain(step.named_transforms, self.transforms):
-            if transform.is_match(arg):
-                return transform.transform_arg(arg)
         return arg
+        self._nt_capture_group_index[named_transform.capture_group_name] = named_transform
+        self.named_transforms_did_change()
+    
+    def named_transforms_did_change(self):
+        """Call every time a named transform changed (so steps can re-generate)"""
+        self.nt_change_id += 1
 
     def find_step_impl(self, step):
         """
@@ -221,12 +230,25 @@ class StepImplRegistry(object):
         """
         result = None
         for si in self.steps[step.step_type]:
-            matches = si.match(step.match)
-            if matches:
+            if match:
                 if result:
                     raise AmbiguousStepImpl(step, result[0], si)
-
-                args = [self._apply_transforms(arg, si) for arg in matches.groups()]
+                
+                def extract_arg(enum):
+                    i, arg = enum
+                    group_number = i + 1  # group numbers are 1-indexed
+                    group_name = si.name_lookup.get(group_number, None)
+                    named_transform = self._nt_capture_group_index.get(group_name, None)
+                    if named_transform:
+                        return named_transform.transform_arg(arg)
+                    else:
+                        for transform in self.transforms:
+                            if transform.is_match(arg):
+                                return transform.transform_arg(arg)
+                        return arg
+                
+                args = map(extract_arg, enumerate(match.groups()))
+                
                 result = si, args
 
         if not result:
