@@ -245,7 +245,10 @@ class StepImplRegistry(object):
                     group_name = si.name_lookup.get(group_number, None)
                     named_transform = self._nt_capture_group_index.get(group_name, None)
                     if named_transform:
-                        return named_transform.transform_arg(arg)
+                        if arg:
+                            return named_transform.transform_arg(arg)
+                        else:
+                            return arg
                     else:
                         for transform in self.transforms:
                             if transform.is_match(arg):
